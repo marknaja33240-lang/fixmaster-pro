@@ -1,26 +1,98 @@
 // ==========================================================================
-// FixMaster Pro - Universal Node.js Backend Server
-// Compatible with all Node.js versions (v18, v20, v22+)
-// Uses built-in SQLite when available, with automatic JSON file fallback
+// FixMaster Pro - Universal Backend Server (Turso Cloud + Local SQLite)
+// Zero external dependencies: Uses native HTTP Turso Client and SQLite
 // ==========================================================================
 
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 
+// Auto-load .env file if present
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  try {
+    const envLines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+    for (const line of envLines) {
+      const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+      if (match) {
+        const key = match[1];
+        let val = (match[2] || '').trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        if (!process.env[key]) process.env[key] = val;
+      }
+    }
+  } catch (e) {}
+}
+
 const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'fixmaster.db');
 const JSON_FILE = path.join(__dirname, 'fixmaster_data.json');
 
-// --- 1. Detect SQLite Support ---
-let DatabaseSync = null;
-try {
-  DatabaseSync = require('node:sqlite').DatabaseSync;
-} catch (e) {
-  DatabaseSync = null;
+// Turso Cloud Environment Variables
+const TURSO_URL = process.env.TURSO_DATABASE_URL || process.env.TURSO_URL || '';
+const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || process.env.TURSO_TOKEN || '';
+
+// --- 1. Turso Native HTTP Client ---
+class TursoHttpClient {
+  constructor(url, token) {
+    let cleanUrl = url.replace('libsql://', 'https://');
+    if (!cleanUrl.startsWith('http')) cleanUrl = 'https://' + cleanUrl;
+    this.endpoint = cleanUrl.replace(/\/+$/, '') + '/v2/pipeline';
+    this.token = token;
+  }
+
+  async execute(sql, args = []) {
+    const formattedArgs = args.map(arg => {
+      if (arg === null || arg === undefined) return { type: 'null' };
+      if (typeof arg === 'number') {
+        return Number.isInteger(arg) ? { type: 'integer', value: String(arg) } : { type: 'float', value: arg };
+      }
+      return { type: 'text', value: String(arg) };
+    });
+
+    const res = await fetch(this.endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        requests: [
+          { type: 'execute', stmt: { sql, args: formattedArgs } },
+          { type: 'close' }
+        ]
+      })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Turso HTTP Error (${res.status}): ${errText}`);
+    }
+
+    const data = await res.json();
+    const result = data.results[0]?.response?.result;
+    if (!result) return { rows: [], affectedRowCount: 0 };
+
+    const cols = result.cols.map(c => c.name);
+    const rows = result.rows.map(row => {
+      const obj = {};
+      row.forEach((cell, idx) => {
+        let val = cell.value;
+        if (cell.type === 'integer') val = parseInt(val, 10);
+        else if (cell.type === 'float') val = parseFloat(val);
+        else if (cell.type === 'null') val = null;
+        obj[cols[idx]] = val;
+      });
+      return obj;
+    });
+
+    return { rows, affectedRowCount: result.affected_row_count };
+  }
 }
 
-// Initial Data
+// Initial Mock Seed Data
 const SEED_DATA = {
   shop: {
     id: 1,
@@ -110,26 +182,98 @@ const SEED_DATA = {
   ]
 };
 
-// Data Store Abstraction
+// Storage Engine Implementation
 class StorageEngine {
   constructor() {
-    this.isSqlite = !!DatabaseSync;
-    if (this.isSqlite) {
+    this.mode = 'json'; // 'turso', 'sqlite', 'json'
+    this.tursoClient = null;
+    this.sqliteDb = null;
+
+    if (TURSO_URL && TURSO_TOKEN) {
+      try {
+        this.tursoClient = new TursoHttpClient(TURSO_URL, TURSO_TOKEN);
+        this.mode = 'turso';
+        console.log(`🌐 Storage: Connected to Turso Cloud (${TURSO_URL})`);
+        this.initTurso();
+        return;
+      } catch (err) {
+        console.warn('Failed to initialize Turso, falling back to local SQLite:', err);
+      }
+    }
+
+    // Local SQLite fallback
+    let DatabaseSync = null;
+    try { DatabaseSync = require('node:sqlite').DatabaseSync; } catch (e) { DatabaseSync = null; }
+
+    if (DatabaseSync) {
       try {
         this.sqliteDb = new DatabaseSync(DB_FILE);
+        this.mode = 'sqlite';
+        console.log('💾 Storage: Local SQLite Database active');
         this.initSqlite();
-        console.log('✅ Storage: SQLite Database Engine active');
+        return;
       } catch (err) {
-        console.warn('SQLite init error, falling back to JSON:', err);
-        this.isSqlite = false;
-        this.initJson();
+        console.warn('Local SQLite error, falling back to JSON:', err);
       }
-    } else {
-      console.log('ℹ️ Storage: JSON Persistence Engine active (Node < 22.5)');
-      this.initJson();
+    }
+
+    // JSON file fallback
+    this.mode = 'json';
+    console.log('ℹ️ Storage: JSON Persistence active');
+    this.initJson();
+  }
+
+  // --- Turso Cloud Init ---
+  async initTurso() {
+    try {
+      await this.tursoClient.execute(`
+        CREATE TABLE IF NOT EXISTS shop_info (id INTEGER PRIMARY KEY CHECK (id = 1), name TEXT, branch TEXT, address TEXT, phone TEXT, lineId TEXT, promptpay TEXT, promptpayName TEXT, vatNumber TEXT, taxRate REAL);
+      `);
+      await this.tursoClient.execute(`CREATE TABLE IF NOT EXISTS technicians (id TEXT PRIMARY KEY, name TEXT, phone TEXT);`);
+      await this.tursoClient.execute(`CREATE TABLE IF NOT EXISTS inventory (id TEXT PRIMARY KEY, name TEXT, category TEXT, brand TEXT, model TEXT, costPrice REAL, sellPrice REAL, stock INTEGER, minStock INTEGER, unit TEXT);`);
+      await this.tursoClient.execute(`CREATE TABLE IF NOT EXISTS tickets (ticketId TEXT PRIMARY KEY, createdAt TEXT, customer_json TEXT, device_json TEXT, symptom TEXT, preChecklist_json TEXT, assignedTechId TEXT, status TEXT, partsUsed_json TEXT, laborFee REAL, discount REAL, totalPrice REAL, deposit REAL, logs_json TEXT, technicianNote TEXT);`);
+
+      const res = await this.tursoClient.execute('SELECT count(*) as count FROM shop_info');
+      const count = res.rows[0]?.count || 0;
+      if (count === 0) {
+        console.log('🌱 Seeding initial data into Turso Cloud...');
+        await this.resetTurso();
+      }
+    } catch (e) {
+      console.error('Error during Turso table init:', e);
     }
   }
 
+  async resetTurso() {
+    const s = SEED_DATA;
+    await this.tursoClient.execute('DELETE FROM shop_info;');
+    await this.tursoClient.execute('DELETE FROM technicians;');
+    await this.tursoClient.execute('DELETE FROM inventory;');
+    await this.tursoClient.execute('DELETE FROM tickets;');
+
+    await this.tursoClient.execute(
+      `INSERT INTO shop_info VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [s.shop.name, s.shop.branch, s.shop.address, s.shop.phone, s.shop.lineId, s.shop.promptpay, s.shop.promptpayName, s.shop.vatNumber, s.shop.taxRate]
+    );
+
+    for (const t of s.technicians) {
+      await this.tursoClient.execute(`INSERT INTO technicians VALUES (?, ?, ?)`, [t.id, t.name, t.phone]);
+    }
+    for (const p of s.inventory) {
+      await this.tursoClient.execute(
+        `INSERT INTO inventory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [p.id, p.name, p.category, p.brand, p.model, p.costPrice, p.sellPrice, p.stock, p.minStock, p.unit]
+      );
+    }
+    for (const t of s.tickets) {
+      await this.tursoClient.execute(
+        `INSERT INTO tickets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [t.ticketId, t.createdAt, JSON.stringify(t.customer), JSON.stringify(t.device), t.symptom, JSON.stringify(t.preChecklist), t.assignedTechId, t.status, JSON.stringify(t.partsUsed), t.laborFee, t.discount, t.totalPrice, t.deposit, JSON.stringify(t.logs), t.technicianNote]
+      );
+    }
+  }
+
+  // --- SQLite Init ---
   initSqlite() {
     this.sqliteDb.exec(`
       CREATE TABLE IF NOT EXISTS shop_info (id INTEGER PRIMARY KEY CHECK (id = 1), name TEXT, branch TEXT, address TEXT, phone TEXT, lineId TEXT, promptpay TEXT, promptpayName TEXT, vatNumber TEXT, taxRate REAL);
@@ -161,6 +305,7 @@ class StorageEngine {
     ));
   }
 
+  // --- JSON Init ---
   initJson() {
     if (!fs.existsSync(JSON_FILE)) {
       fs.writeFileSync(JSON_FILE, JSON.stringify(SEED_DATA, null, 2), 'utf8');
@@ -168,28 +313,33 @@ class StorageEngine {
   }
 
   readJson() {
-    try {
-      const data = fs.readFileSync(JSON_FILE, 'utf8');
-      return JSON.parse(data);
-    } catch {
-      return SEED_DATA;
-    }
+    try { return JSON.parse(fs.readFileSync(JSON_FILE, 'utf8')); }
+    catch { return SEED_DATA; }
   }
 
   writeJson(data) {
     fs.writeFileSync(JSON_FILE, JSON.stringify(data, null, 2), 'utf8');
   }
 
-  // --- API Methods ---
-  getShop() {
-    if (this.isSqlite) {
+  // --- Common API Handlers ---
+  async getShop() {
+    if (this.mode === 'turso') {
+      const res = await this.tursoClient.execute('SELECT * FROM shop_info WHERE id = 1');
+      return res.rows[0] || SEED_DATA.shop;
+    }
+    if (this.mode === 'sqlite') {
       return this.sqliteDb.prepare('SELECT * FROM shop_info WHERE id = 1').get() || SEED_DATA.shop;
     }
     return this.readJson().shop || SEED_DATA.shop;
   }
 
-  saveShop(b) {
-    if (this.isSqlite) {
+  async saveShop(b) {
+    if (this.mode === 'turso') {
+      await this.tursoClient.execute(
+        `UPDATE shop_info SET name=?, branch=?, address=?, phone=?, lineId=?, promptpay=?, promptpayName=?, vatNumber=?, taxRate=? WHERE id = 1`,
+        [b.name, b.branch, b.address, b.phone, b.lineId, b.promptpay, b.promptpayName, b.vatNumber, b.taxRate]
+      );
+    } else if (this.mode === 'sqlite') {
       this.sqliteDb.prepare(`UPDATE shop_info SET name=?, branch=?, address=?, phone=?, lineId=?, promptpay=?, promptpayName=?, vatNumber=?, taxRate=? WHERE id = 1`)
         .run(b.name, b.branch, b.address, b.phone, b.lineId, b.promptpay, b.promptpayName, b.vatNumber, b.taxRate);
     } else {
@@ -199,20 +349,41 @@ class StorageEngine {
     }
   }
 
-  getTechs() {
-    if (this.isSqlite) return this.sqliteDb.prepare('SELECT * FROM technicians').all();
+  async getTechs() {
+    if (this.mode === 'turso') {
+      const res = await this.tursoClient.execute('SELECT * FROM technicians');
+      return res.rows;
+    }
+    if (this.mode === 'sqlite') return this.sqliteDb.prepare('SELECT * FROM technicians').all();
     return this.readJson().technicians || [];
   }
 
-  getInventory() {
-    if (this.isSqlite) return this.sqliteDb.prepare('SELECT * FROM inventory').all();
+  async getInventory() {
+    if (this.mode === 'turso') {
+      const res = await this.tursoClient.execute('SELECT * FROM inventory');
+      return res.rows;
+    }
+    if (this.mode === 'sqlite') return this.sqliteDb.prepare('SELECT * FROM inventory').all();
     return this.readJson().inventory || [];
   }
 
-  savePart(p) {
+  async savePart(p) {
     const id = p.id || `PART-${Date.now().toString().slice(-4)}`;
     p.id = id;
-    if (this.isSqlite) {
+    if (this.mode === 'turso') {
+      const check = await this.tursoClient.execute('SELECT id FROM inventory WHERE id = ?', [id]);
+      if (check.rows.length > 0) {
+        await this.tursoClient.execute(
+          'UPDATE inventory SET name=?, category=?, brand=?, model=?, costPrice=?, sellPrice=?, stock=?, minStock=?, unit=? WHERE id=?',
+          [p.name, p.category, p.brand, p.model, p.costPrice, p.sellPrice, p.stock, p.minStock, p.unit || 'ชิ้น', id]
+        );
+      } else {
+        await this.tursoClient.execute(
+          'INSERT INTO inventory VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, p.name, p.category, p.brand, p.model, p.costPrice, p.sellPrice, p.stock, p.minStock, p.unit || 'ชิ้น']
+        );
+      }
+    } else if (this.mode === 'sqlite') {
       const exist = this.sqliteDb.prepare('SELECT id FROM inventory WHERE id = ?').get(id);
       if (exist) {
         this.sqliteDb.prepare('UPDATE inventory SET name=?, category=?, brand=?, model=?, costPrice=?, sellPrice=?, stock=?, minStock=?, unit=? WHERE id=?')
@@ -231,8 +402,9 @@ class StorageEngine {
     return p;
   }
 
-  deletePart(id) {
-    if (this.isSqlite) this.sqliteDb.prepare('DELETE FROM inventory WHERE id = ?').run(id);
+  async deletePart(id) {
+    if (this.mode === 'turso') await this.tursoClient.execute('DELETE FROM inventory WHERE id = ?', [id]);
+    else if (this.mode === 'sqlite') this.sqliteDb.prepare('DELETE FROM inventory WHERE id = ?').run(id);
     else {
       const data = this.readJson();
       data.inventory = data.inventory.filter(x => x.id !== id);
@@ -240,36 +412,62 @@ class StorageEngine {
     }
   }
 
-  getTickets() {
-    if (this.isSqlite) {
+  async getTickets() {
+    if (this.mode === 'turso') {
+      const res = await this.tursoClient.execute('SELECT * FROM tickets ORDER BY createdAt DESC');
+      return res.rows.map(this.mapTicketRow);
+    }
+    if (this.mode === 'sqlite') {
       const rows = this.sqliteDb.prepare('SELECT * FROM tickets ORDER BY createdAt DESC').all();
-      return rows.map(r => ({
-        ticketId: r.ticketId,
-        createdAt: r.createdAt,
-        customer: JSON.parse(r.customer_json || '{}'),
-        device: JSON.parse(r.device_json || '{}'),
-        symptom: r.symptom,
-        preChecklist: JSON.parse(r.preChecklist_json || '{}'),
-        assignedTechId: r.assignedTechId,
-        status: r.status,
-        partsUsed: JSON.parse(r.partsUsed_json || '[]'),
-        laborFee: r.laborFee,
-        discount: r.discount,
-        totalPrice: r.totalPrice,
-        deposit: r.deposit,
-        logs: JSON.parse(r.logs_json || '[]'),
-        technicianNote: r.technicianNote || ''
-      }));
+      return rows.map(this.mapTicketRow);
     }
     return this.readJson().tickets || [];
   }
 
-  getTicket(id) {
-    return this.getTickets().find(t => t.ticketId.toLowerCase() === id.toLowerCase());
+  mapTicketRow(r) {
+    return {
+      ticketId: r.ticketId,
+      createdAt: r.createdAt,
+      customer: JSON.parse(r.customer_json || '{}'),
+      device: JSON.parse(r.device_json || '{}'),
+      symptom: r.symptom,
+      preChecklist: JSON.parse(r.preChecklist_json || '{}'),
+      assignedTechId: r.assignedTechId,
+      status: r.status,
+      partsUsed: JSON.parse(r.partsUsed_json || '[]'),
+      laborFee: r.laborFee,
+      discount: r.discount,
+      totalPrice: r.totalPrice,
+      deposit: r.deposit,
+      logs: JSON.parse(r.logs_json || '[]'),
+      technicianNote: r.technicianNote || ''
+    };
   }
 
-  saveTicket(t) {
-    if (this.isSqlite) {
+  async getTicket(id) {
+    if (this.mode === 'turso') {
+      const res = await this.tursoClient.execute('SELECT * FROM tickets WHERE ticketId = ?', [id]);
+      return res.rows.length > 0 ? this.mapTicketRow(res.rows[0]) : null;
+    }
+    const tickets = await this.getTickets();
+    return tickets.find(t => t.ticketId.toLowerCase() === id.toLowerCase());
+  }
+
+  async saveTicket(t) {
+    if (this.mode === 'turso') {
+      const check = await this.tursoClient.execute('SELECT ticketId FROM tickets WHERE ticketId = ?', [t.ticketId]);
+      if (check.rows.length > 0) {
+        await this.tursoClient.execute(
+          `UPDATE tickets SET customer_json=?, device_json=?, symptom=?, preChecklist_json=?, assignedTechId=?, status=?, partsUsed_json=?, laborFee=?, discount=?, totalPrice=?, deposit=?, logs_json=?, technicianNote=? WHERE ticketId=?`,
+          [JSON.stringify(t.customer||{}), JSON.stringify(t.device||{}), t.symptom||'', JSON.stringify(t.preChecklist||{}), t.assignedTechId||'', t.status||'pending', JSON.stringify(t.partsUsed||[]), t.laborFee||0, t.discount||0, t.totalPrice||0, t.deposit||0, JSON.stringify(t.logs||[]), t.technicianNote||'', t.ticketId]
+        );
+      } else {
+        await this.tursoClient.execute(
+          `INSERT INTO tickets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [t.ticketId, t.createdAt||new Date().toISOString(), JSON.stringify(t.customer||{}), JSON.stringify(t.device||{}), t.symptom||'', JSON.stringify(t.preChecklist||{}), t.assignedTechId||'', t.status||'pending', JSON.stringify(t.partsUsed||[]), t.laborFee||0, t.discount||0, t.totalPrice||0, t.deposit||0, JSON.stringify(t.logs||[]), t.technicianNote||'']
+        );
+      }
+    } else if (this.mode === 'sqlite') {
       const exist = this.sqliteDb.prepare('SELECT ticketId FROM tickets WHERE ticketId = ?').get(t.ticketId);
       if (exist) {
         this.sqliteDb.prepare(`UPDATE tickets SET customer_json=?, device_json=?, symptom=?, preChecklist_json=?, assignedTechId=?, status=?, partsUsed_json=?, laborFee=?, discount=?, totalPrice=?, deposit=?, logs_json=?, technicianNote=? WHERE ticketId=?`)
@@ -288,18 +486,19 @@ class StorageEngine {
     return t;
   }
 
-  updateTicketStatus(ticketId, status, note) {
-    const ticket = this.getTicket(ticketId);
+  async updateTicketStatus(ticketId, status, note) {
+    const ticket = await this.getTicket(ticketId);
     if (!ticket) return null;
     ticket.status = status;
     if (!ticket.logs) ticket.logs = [];
     ticket.logs.push({ time: new Date().toISOString(), status, note: note || `เปลี่ยนสถานะเป็น ${status}` });
-    this.saveTicket(ticket);
+    await this.saveTicket(ticket);
     return ticket;
   }
 
-  deleteTicket(ticketId) {
-    if (this.isSqlite) this.sqliteDb.prepare('DELETE FROM tickets WHERE ticketId = ?').run(ticketId);
+  async deleteTicket(ticketId) {
+    if (this.mode === 'turso') await this.tursoClient.execute('DELETE FROM tickets WHERE ticketId = ?', [ticketId]);
+    else if (this.mode === 'sqlite') this.sqliteDb.prepare('DELETE FROM tickets WHERE ticketId = ?').run(ticketId);
     else {
       const data = this.readJson();
       data.tickets = data.tickets.filter(x => x.ticketId !== ticketId);
@@ -307,8 +506,9 @@ class StorageEngine {
     }
   }
 
-  resetAll() {
-    if (this.isSqlite) this.resetSqlite();
+  async resetAll() {
+    if (this.mode === 'turso') await this.resetTurso();
+    else if (this.mode === 'sqlite') this.resetSqlite();
     else this.writeJson(SEED_DATA);
   }
 }
@@ -366,24 +566,32 @@ const server = http.createServer(async (req, res) => {
   // API Routes
   if (pathname.startsWith('/api/')) {
     try {
+      if (pathname === '/api/db-status') {
+        return sendJson(res, 200, {
+          mode: store.mode,
+          type: store.mode === 'turso' ? 'Turso Cloud SQLite' : (store.mode === 'sqlite' ? 'Local SQLite' : 'JSON Persistence'),
+          tursoUrl: TURSO_URL ? TURSO_URL.replace(/:\/\/[^@]*@/, '://') : null
+        });
+      }
+
       if (pathname === '/api/shop') {
-        if (method === 'GET') return sendJson(res, 200, store.getShop());
+        if (method === 'GET') return sendJson(res, 200, await store.getShop());
         if (method === 'PUT') {
           const b = await readJsonBody(req);
-          store.saveShop(b);
+          await store.saveShop(b);
           return sendJson(res, 200, { success: true });
         }
       }
 
       if (pathname === '/api/technicians' && method === 'GET') {
-        return sendJson(res, 200, store.getTechs());
+        return sendJson(res, 200, await store.getTechs());
       }
 
       if (pathname === '/api/inventory') {
-        if (method === 'GET') return sendJson(res, 200, store.getInventory());
+        if (method === 'GET') return sendJson(res, 200, await store.getInventory());
         if (method === 'POST') {
           const p = await readJsonBody(req);
-          return sendJson(res, 201, store.savePart(p));
+          return sendJson(res, 201, await store.savePart(p));
         }
       }
 
@@ -393,19 +601,19 @@ const server = http.createServer(async (req, res) => {
         if (method === 'PUT') {
           const p = await readJsonBody(req);
           p.id = partId;
-          return sendJson(res, 200, store.savePart(p));
+          return sendJson(res, 200, await store.savePart(p));
         }
         if (method === 'DELETE') {
-          store.deletePart(partId);
+          await store.deletePart(partId);
           return sendJson(res, 200, { success: true });
         }
       }
 
       if (pathname === '/api/tickets') {
-        if (method === 'GET') return sendJson(res, 200, store.getTickets());
+        if (method === 'GET') return sendJson(res, 200, await store.getTickets());
         if (method === 'POST') {
           const t = await readJsonBody(req);
-          return sendJson(res, 201, store.saveTicket(t));
+          return sendJson(res, 201, await store.saveTicket(t));
         }
       }
 
@@ -413,17 +621,17 @@ const server = http.createServer(async (req, res) => {
       if (ticketMatch) {
         const ticketId = decodeURIComponent(ticketMatch[1]);
         if (method === 'GET') {
-          const t = store.getTicket(ticketId);
+          const t = await store.getTicket(ticketId);
           if (!t) return sendJson(res, 404, { error: 'Not found' });
           return sendJson(res, 200, t);
         }
         if (method === 'PUT') {
           const t = await readJsonBody(req);
           t.ticketId = ticketId;
-          return sendJson(res, 200, store.saveTicket(t));
+          return sendJson(res, 200, await store.saveTicket(t));
         }
         if (method === 'DELETE') {
-          store.deleteTicket(ticketId);
+          await store.deleteTicket(ticketId);
           return sendJson(res, 200, { success: true });
         }
       }
@@ -432,13 +640,13 @@ const server = http.createServer(async (req, res) => {
       if (statusMatch && method === 'POST') {
         const ticketId = decodeURIComponent(statusMatch[1]);
         const { status, note } = await readJsonBody(req);
-        const t = store.updateTicketStatus(ticketId, status, note);
+        const t = await store.updateTicketStatus(ticketId, status, note);
         if (!t) return sendJson(res, 404, { error: 'Not found' });
         return sendJson(res, 200, t);
       }
 
       if (pathname === '/api/reset' && method === 'POST') {
-        store.resetAll();
+        await store.resetAll();
         return sendJson(res, 200, { success: true });
       }
 
@@ -477,7 +685,7 @@ server.listen(PORT, '0.0.0.0', () => {
 =============================================================
 🚀 FixMaster Pro is running!
 📡 URL: http://0.0.0.0:${PORT}
-💾 Mode: ${store.isSqlite ? 'SQLite Database' : 'JSON Persistence'}
+💾 Mode: ${store.mode.toUpperCase()}
 =============================================================
   `);
 });
