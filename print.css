@@ -1,0 +1,94 @@
+/* ==========================================================================
+   FixMaster Pro - Print Stylesheet (Receipts, Invoices & Job Slips)
+   ========================================================================== */
+
+@media print {
+  /* Hide non-printable UI elements */
+  body * {
+    visibility: hidden;
+  }
+  
+  .print-area, .print-area * {
+    visibility: visible;
+  }
+
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    color: #000 !important;
+    background: #fff !important;
+    font-family: 'Prompt', -apple-system, sans-serif !important;
+    padding: 15px;
+    box-sizing: border-box;
+  }
+
+  /* Thermal Slip receipt style (80mm width) */
+  .receipt-slip {
+    max-width: 300px;
+    margin: 0 auto;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .receipt-header {
+    text-align: center;
+    border-bottom: 1px dashed #000;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+  }
+
+  .receipt-title {
+    font-size: 16px;
+    font-weight: bold;
+  }
+
+  .receipt-subtitle {
+    font-size: 11px;
+    color: #333;
+  }
+
+  .receipt-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0;
+    font-size: 11px;
+  }
+
+  .receipt-table th {
+    border-bottom: 1px solid #000;
+    text-align: left;
+    padding: 4px 0;
+  }
+
+  .receipt-table td {
+    padding: 4px 0;
+  }
+
+  .receipt-divider {
+    border-top: 1px dashed #000;
+    margin: 8px 0;
+  }
+
+  .receipt-footer {
+    text-align: center;
+    font-size: 10px;
+    margin-top: 15px;
+    border-top: 1px dashed #000;
+    padding-top: 10px;
+  }
+
+  .qr-code-container {
+    display: flex;
+    justify-content: center;
+    margin: 10px 0;
+  }
+
+  .qr-code-container svg,
+  .qr-code-container canvas,
+  .qr-code-container img {
+    width: 110px;
+    height: 110px;
+  }
+}

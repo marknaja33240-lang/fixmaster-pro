@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FixMaster Pro - SQLite Database Viewer (Web Admin)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;500;600&family=Prompt:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="css/main.css">
+  <link rel="stylesheet" href="css/components.css">
+  <style>
+    body { padding: 2rem 1rem; }
+    .admin-container { max-width: 1200px; margin: 0 auto; }
+    .table-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+    .raw-json-box {
+      background: #090d16;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 1rem;
+      color: #38bdf8;
+      font-family: Consolas, monospace;
+      font-size: 0.85rem;
+      max-height: 450px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="admin-container">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem;">
+      <div>
+        <h1 style="font-size: 1.8rem; font-weight: 700; display: flex; align-items: center; gap: 0.6rem;">
+          <i class="fas fa-database" style="color: #10b981;"></i> FixMaster SQLite Database Viewer
+        </h1>
+        <p style="color: var(--text-muted); margin-top: 0.3rem;">
+          หน้าจอตรวจสอบข้อมูลจริงในฐานข้อมูล SQLite (<code style="color: #22d3ee;">fixmaster.db</code>)
+        </p>
+      </div>
+
+      <div style="display: flex; gap: 0.75rem;">
+        <a href="/" class="btn btn-secondary"><i class="fas fa-arrow-left"></i> กลับหน้าร้าน</a>
+        <button class="btn btn-primary" id="btn-refresh"><i class="fas fa-sync-alt"></i> รีเฟรชข้อมูล</button>
+      </div>
+    </div>
+
+    <!-- DB Stats Banner -->
+    <div class="glass-panel" style="padding: 1.25rem; margin-bottom: 1.5rem; display: flex; justify-content: space-around; flex-wrap: wrap; gap: 1rem; text-align: center;">
+      <div>
+        <small style="color: var(--text-muted);">Database Type</small>
+        <div style="font-size: 1.2rem; font-weight: bold; color: #10b981;">SQLite 3</div>
+      </div>
+      <div>
+        <small style="color: var(--text-muted);">Database File</small>
+        <div style="font-size: 1.2rem; font-weight: bold; color: #38bdf8;">fixmaster.db</div>
+      </div>
+      <div>
+        <small style="color: var(--text-muted);">Connection Status</small>
+        <div style="font-size: 1.2rem; font-weight: bold; color: #34d399;">Active (Connected)</div>
+      </div>
+    </div>
+
+    <!-- Table Selector Tabs -->
+    <div class="table-tabs">
+      <button class="nav-btn active" data-table="tickets"><i class="fas fa-ticket-alt"></i> ตาราง tickets (ใบรับซ่อม)</button>
+      <button class="nav-btn" data-table="inventory"><i class="fas fa-boxes"></i> ตาราง inventory (คลังอะไหล่)</button>
+      <button class="nav-btn" data-table="technicians"><i class="fas fa-user-shield"></i> ตาราง technicians (ทีมช่าง)</button>
+      <button class="nav-btn" data-table="shop"><i class="fas fa-store"></i> ตาราง shop_info (ข้อมูลร้าน)</button>
+    </div>
+
+    <!-- View Mode: Table or JSON -->
+    <div class="glass-panel" style="padding: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 id="table-title" style="font-size: 1.15rem; font-weight: 700; color: var(--accent-secondary);">
+          ข้อมูลในตาราง: tickets
+        </h3>
+        <span id="row-count-badge" class="badge badge-ready">0 rows</span>
+      </div>
+
+      <div class="table-container" id="table-container-view">
+        <!-- Live Table View -->
+      </div>
+
+      <div style="margin-top: 1.5rem;">
+        <h4 style="font-size: 0.95rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+          <i class="fas fa-code"></i> Raw JSON Database Output (API Stream):
+        </h4>
+        <pre class="raw-json-box" id="raw-json-display">กำลังโหลดข้อมูล...</pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentTable = 'tickets';
+
+    async function loadTableData(table) {
+      currentTable = table;
+      const title = document.getElementById('table-title');
+      const badge = document.getElementById('row-count-badge');
+      const tableContainer = document.getElementById('table-container-view');
+      const jsonBox = document.getElementById('raw-json-display');
+
+      title.innerHTML = `<i class="fas fa-table"></i> ข้อมูลในตาราง: <code>${table}</code>`;
+      jsonBox.textContent = 'กำลังโหลดข้อมูลจาก Database...';
+
+      try {
+        const res = await fetch(`/api/${table}`);
+        const data = await res.json();
+
+        jsonBox.textContent = JSON.stringify(data, null, 2);
+
+        const rows = Array.isArray(data) ? data : [data];
+        badge.textContent = `${rows.length} รายการ (Rows)`;
+
+        if (rows.length === 0) {
+          tableContainer.innerHTML = '<p style="text-align: center; color: var(--text-muted); padding: 2rem;">ไม่มีข้อมูลในตารางนี้</p>';
+          return;
+        }
+
+        // Render Dynamic Table Header
+        const columns = Object.keys(rows[0]);
+        let thHtml = columns.map(c => `<th>${c}</th>`).join('');
+        
+        let trHtml = rows.map(row => {
+          let tds = columns.map(col => {
+            let val = row[col];
+            if (typeof val === 'object' && val !== null) {
+              val = JSON.stringify(val);
+            }
+            return `<td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${String(val).replace(/"/g, '&quot;')}">${val !== null && val !== undefined ? val : '-'}</td>`;
+          }).join('');
+          return `<tr>${tds}</tr>`;
+        }).join('');
+
+        tableContainer.innerHTML = `
+          <table class="custom-table" style="font-size: 0.85rem;">
+            <thead><tr>${thHtml}</tr></thead>
+            <tbody>${trHtml}</tbody>
+          </table>
+        `;
+      } catch (err) {
+        jsonBox.textContent = 'เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + err.message;
+        tableContainer.innerHTML = '<p style="color: #ef4444; padding: 1rem;">ไม่สามารถเชื่อมต่อฐานข้อมูลได้ กรุณาตรวจสอบว่า node server.js รันอยู่หรือไม่</p>';
+      }
+    }
+
+    // Tabs listener
+    document.querySelectorAll('.table-tabs .nav-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        document.querySelectorAll('.table-tabs .nav-btn').forEach(b => b.classList.remove('active'));
+        e.currentTarget.classList.add('active');
+        const tbl = e.currentTarget.getAttribute('data-table');
+        loadTableData(tbl);
+      });
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', () => {
+      loadTableData(currentTable);
+    });
+
+    // Initial load
+    loadTableData('tickets');
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "fixmaster-pro",
+  "version": "1.0.0",
+  "description": "Mobile Phone Repair Shop Management System with SQLite Database",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "repair-shop",
+    "mobile-repair",
+    "pos",
+    "inventory",
+    "sqlite"
+  ],
+  "author": "MARK",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

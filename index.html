@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="FixMaster Pro - ระบบบริหารจัดการร้านซ่อมมือถือ ออกใบรับซ่อม คลังอะไหล่ POS และระบบเช็คสถานะสำหรับลูกค้า">
+  <title>FixMaster Pro - ระบบจัดการร้านซ่อมโทรศัพท์มือถือครบวงจร</title>
+  
+  <!-- Thai Modern Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;500;600;700&family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- FontAwesome Icons CDN -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- App Stylesheets -->
+  <link rel="stylesheet" href="css/main.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/print.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Navbar Header -->
+    <header class="navbar">
+      <div class="brand-logo" data-view="dashboard">
+        <div class="brand-icon">
+          <i class="fas fa-wrench"></i>
+        </div>
+        <div>
+          <span>FixMaster</span> <span style="font-weight: 300; font-size: 0.9em; opacity: 0.9;">PRO</span>
+        </div>
+      </div>
+
+      <!-- Main Navigation Tabs -->
+      <nav>
+        <ul class="nav-links">
+          <li>
+            <button class="nav-btn active" data-view="dashboard">
+              <i class="fas fa-chart-pie"></i> ภาพรวมร้าน (Dashboard)
+            </button>
+          </li>
+          <li>
+            <button class="nav-btn" data-view="tickets">
+              <i class="fas fa-ticket-alt"></i> ใบรับซ่อม (Tickets)
+            </button>
+          </li>
+          <li>
+            <button class="nav-btn" data-view="inventory">
+              <i class="fas fa-boxes"></i> คลังอะไหล่ (Inventory)
+            </button>
+          </li>
+          <li>
+            <button class="nav-btn" data-view="pos">
+              <i class="fas fa-cash-register"></i> ชำระเงิน/ออกใบเสร็จ (POS)
+            </button>
+          </li>
+          <li>
+            <button class="nav-btn" data-view="tracker">
+              <i class="fas fa-search-location"></i> ลูกค้าเช็คสถานะ
+            </button>
+          </li>
+        </ul>
+      </nav>
+
+      <!-- Global Actions & Search -->
+      <div class="nav-actions">
+        <a href="/db-admin.html" class="btn btn-secondary" style="font-size: 0.82rem; padding: 0.45rem 0.8rem; white-space: nowrap;" title="เปิดดูตารางฐานข้อมูล SQLite จริง">
+          <i class="fas fa-database" style="color: #10b981;"></i> ดู Database
+        </a>
+
+        <div class="search-wrapper">
+          <i class="fas fa-search search-icon"></i>
+          <input type="text" class="search-input" id="global-search-input" placeholder="ค้นหาตามเลขซ่อม, ชื่อ, รุ่น...">
+        </div>
+
+        <button class="btn btn-secondary btn-icon-only" id="btn-reset-data" title="รีเซ็ตข้อมูลตัวอย่าง">
+          <i class="fas fa-sync-alt"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="main-content" id="main-container">
+      <!-- Dynamic Content Rendered Here -->
+    </main>
+
+    <!-- App Footer -->
+    <footer style="text-align: center; padding: 1.5rem; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border-color); margin-top: auto;">
+      <p>© 2026 FixMaster Pro Mobile Repair Management System | ระบบบริหารจัดการร้านซ่อมมือถือระดับมืออาชีพ</p>
+    </footer>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container"></div>
+
+  <!-- App Entry Point Module -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
